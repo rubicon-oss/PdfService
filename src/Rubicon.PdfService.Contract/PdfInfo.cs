@@ -34,5 +34,6 @@ namespace Rubicon.PdfService.Contract
     public Version Version;
     public PdfConformanceEnum? ConformanceLevel;
     public int PageCount;
+    public PdfConformanceEnum? ConfiguredConformanceLevel;
   }
 }

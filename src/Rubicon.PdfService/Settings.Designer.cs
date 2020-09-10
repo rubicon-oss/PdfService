@@ -40,5 +40,14 @@ namespace Rubicon.PdfService {
                 return ((string)(this["RbIccProfileName"]));
             }
         }
+        
+        [global::System.Configuration.ApplicationScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("PdfA1b")]
+        public string PdfAHeaderVersion {
+            get {
+                return ((string)(this["PdfAHeaderVersion"]));
+            }
+        }
     }
 }

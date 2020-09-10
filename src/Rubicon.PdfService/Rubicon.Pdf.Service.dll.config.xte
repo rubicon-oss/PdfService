@@ -15,6 +15,9 @@
           <setting name="RbIccProfileName" serializeAs="String">
             <value>$[PdfService_RgbIccProfileName:ifempty=sRGB IEC61966-2.1]</value>
           </setting>
+          <setting name="PdfAHeaderVersion" serializeAs="String">
+            <value>$[PdfService_PdfAHeaderVersion:ifempty=PdfA1b]</value>
+          </setting>
         </Rubicon.PdfService.Settings>
       </applicationSettings>
     </configuration>

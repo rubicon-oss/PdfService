@@ -16,6 +16,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Configuration;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
@@ -25,6 +26,7 @@ using iTextSharp.text;
 using iTextSharp.text.exceptions;
 using iTextSharp.text.pdf;
 using iTextSharp.xmp.impl;
+using JetBrains.Annotations;
 using log4net;
 using Rubicon.PdfService.Contract;
 using FaultReason = Rubicon.PdfService.Contract.FaultReason;
@@ -37,8 +39,7 @@ namespace Rubicon.PdfService
   {
     static PdfServiceBase()
     {
-      var fontsPath = Path.Combine(Environment.SystemDirectory, "..\\Fonts");
-      FontFactory.RegisterDirectory(fontsPath);
+      FontFactory.RegisterDirectory(Environment.GetFolderPath(Environment.SpecialFolder.Fonts));
     }
 
     private static readonly Lazy<ILog> s_logger = new Lazy<ILog>(()=>LogManager.GetLogger(typeof(PdfServiceBase)));
@@ -57,7 +58,7 @@ namespace Rubicon.PdfService
     public virtual PdfAConversionResult ConvertToPdfA(byte[] pdfFile)
     {
       var info = GetPdfInfo(pdfFile);
-      if (info.ConformanceLevel == PdfInfo.PdfConformanceEnum.PDF_A_1B || info.ConformanceLevel == PdfInfo.PdfConformanceEnum.PDF_A_1A)
+      if (info.ConformanceLevel == info.ConfiguredConformanceLevel && info.ConfiguredConformanceLevel != null)
         return new PdfAConversionResult { IsPdfA = true, PageCount = info.PageCount };
 
       return ExecWithLogging(() => ConvertToPdfAInternal(pdfFile));
@@ -110,16 +111,17 @@ namespace Rubicon.PdfService
 
     public int GetNumberOfPages(byte[] pdfFile)
     {
-      return ExecWithLogging(
-        () =>
-        {
-          CheckNotNullOrEmpty(pdfFile, "data");
+      return ExecWithLogging(() => GetNumberOfPagesInternal(pdfFile));
+    }
 
-          using (var stream = new MemoryStream(pdfFile))
-          {
-            return GetNumberOfPagesInternal(stream);
-          }
-        });
+    private int GetNumberOfPagesInternal(byte[] pdfFile)
+    {
+      CheckNotNullOrEmpty(pdfFile, nameof(pdfFile));
+
+      using (var stream = new MemoryStream(pdfFile))
+      {
+        return GetNumberOfPagesInternal(stream);
+      }
     }
 
     public byte[] AddOverlay(
@@ -272,7 +274,7 @@ namespace Rubicon.PdfService
           memoryStream,
           initialPageSize,
           null,
-          (doc, writer) => { AddCenteredTextOnNewPage(doc, writer, lines, fontName, fontSize); });
+          (doc, writer) => AddCenteredTextOnNewPage(doc, writer, lines, fontName, fontSize));
         return memoryStream.ToArray();
       }
     }
@@ -283,8 +285,7 @@ namespace Rubicon.PdfService
     {
       try
       {
-        if (File.Exists(path))
-          File.Delete(path);
+        File.Delete(path);
       }
       catch (IOException)
       {
@@ -383,7 +384,7 @@ namespace Rubicon.PdfService
       return lly;
     }
 
-    protected bool IsLandscape(Rectangle r)
+    protected bool IsLandscape([NotNull]Rectangle r)
     {
       return r.Width > r.Height;
     }
@@ -394,17 +395,19 @@ namespace Rubicon.PdfService
       modifyContents = modifyContents ?? (c => c);
 
       var destinationFilePath = Path.GetTempFileName();
-      var sourceDocumentInfos = new List<SourceDocumentInfo>();
+     
+      List<SourceDocumentInfo> sourceDocumentInfos = null;
       try
       {
-        GetSourceDocumentInfos(sourceFiles, modifyContents, sourceDocumentInfos);
+        sourceDocumentInfos = GetSourceDocumentInfos(sourceFiles, modifyContents);
 
         int totalPagesMerged;
         using (var destinationFileStream = File.Open(destinationFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite))
         {
           try
           {
-            sourceDocumentInfos.ForEach(sdi => sdi.InputStream = File.Open(sdi.TempFileName, FileMode.Open));
+            OpenInputStreams(sourceDocumentInfos);
+
             totalPagesMerged = MergeTo(sourceDocumentInfos, destinationFileStream);
           }
           finally
@@ -417,12 +420,22 @@ namespace Rubicon.PdfService
       finally
       {
         DeleteFile(destinationFilePath);
-        foreach (var sourceFile in sourceDocumentInfos)
-          DeleteFile(sourceFile.TempFileName);
+
+        if (sourceDocumentInfos != null)
+        {
+          foreach (var sourceFile in sourceDocumentInfos)
+            DeleteFile(sourceFile.TempFileName);
+        }
       }
     }
 
-    private void AddImage(Rectangle effectivePageSize, Document document, Image img)
+    private static void OpenInputStreams(List<SourceDocumentInfo> sourceDocumentInfos)
+    {
+      foreach (var sdi in sourceDocumentInfos)
+        sdi.InputStream = File.Open(sdi.TempFileName, FileMode.Open);
+    }
+
+    private void AddImage(Rectangle effectivePageSize, Document document, [NotNull]Image img)
     {
       if (IsLandscape(img))
         document.SetPageSize(effectivePageSize.Rotate());
@@ -488,7 +501,7 @@ namespace Rubicon.PdfService
       float fontSize,
       float margin)
     {
-      using (var outputStream = new MemoryStream())
+      using (var outputStream = File.Create(Path.GetTempFileName(), 4096, FileOptions.RandomAccess | FileOptions.DeleteOnClose))
       {
         using (var contentStream = new MemoryStream(pdfFile))
         {
@@ -508,7 +521,9 @@ namespace Rubicon.PdfService
             stamper.Close();
           }
         }
-        return outputStream.ToArray();
+
+        outputStream.Seek(0, SeekOrigin.Begin);
+        return outputStream.ReadAllBytes();
       }
     }
 
@@ -525,24 +540,25 @@ namespace Rubicon.PdfService
       if (totalPageCount.HasValue)
         maxPageNumber = totalPageCount.Value - pagesToSkipBeforeNumbering + firstPageNumberToUse - 1;
 
-
       return AddOverlays(
         content,
-        page =>
-        {
-          if (page < pagesToSkipBeforeNumbering)
-            return null;
-
-          var pageNumber = page - pagesToSkipBeforeNumbering + firstPageNumberToUse;
-          return totalPageCount.HasValue
-            ? string.Format("{0} / {1}", pageNumber, maxPageNumber)
-            : pageNumber.ToString(CultureInfo.InvariantCulture);
-        },
+        page => GetOverlayText(pagesToSkipBeforeNumbering, firstPageNumberToUse, totalPageCount, page, maxPageNumber),
         OverlayPlacementVertical.Bottom,
         OverlayPlacementHorizontal.Center,
         fontName,
         fontSize,
         margin);
+    }
+
+    private static string GetOverlayText(int pagesToSkipBeforeNumbering, int firstPageNumberToUse, int? totalPageCount, int page, int maxPageNumber)
+    {
+      if (page < pagesToSkipBeforeNumbering)
+        return null;
+
+      var pageNumber = page - pagesToSkipBeforeNumbering + firstPageNumberToUse;
+      return totalPageCount.HasValue
+        ? string.Format("{0} / {1}", pageNumber, maxPageNumber)
+        : pageNumber.ToString(CultureInfo.InvariantCulture);
     }
 
     private void CloseInputStreams(IEnumerable<SourceDocumentInfo> sourceDocumentInfos)
@@ -581,18 +597,31 @@ namespace Rubicon.PdfService
       }
     }
 
+    protected PdfAConformanceLevel GetPdfAConformanceLevel()
+    {
+      switch (Settings.Default.PdfAHeaderVersion)
+      {
+        case "PdfA1b":
+          return PdfAConformanceLevel.PDF_A_1B;
+        case "PdfA2b":
+          return PdfAConformanceLevel.PDF_A_2B;
+        default:
+          throw new ConfigurationErrorsException($"Unknow value: \"{ Settings.Default.PdfAHeaderVersion }\". Possible value: \"PdfA1b\",\"PdfA2b\"");
+      }
+    }
+
     private PdfAConversionResult ConvertToPdfAInternal(byte[] pdfFile)
     {
-      int pageCount;
-      using (var outStream = new MemoryStream())
+      using (var outStream = File.Create(Path.GetTempFileName(), 4096, FileOptions.RandomAccess | FileOptions.DeleteOnClose))
       {
+        int pageCount;
         using (var inStream = new MemoryStream(pdfFile))
         {
           using (var reader = new PdfReader(inStream))
           {
             using (var doc = new Document())
             {
-              using (var writer = PdfAWriter.GetInstance(doc, outStream, PdfAConformanceLevel.PDF_A_1B))
+              using (var writer = PdfAWriter.GetInstance(doc, outStream, GetPdfAConformanceLevel()))
               {
                 writer.CreateXmpMetadata();
                 doc.Open();
@@ -644,7 +673,9 @@ namespace Rubicon.PdfService
             reader.Close();
           }
         }
-        return new PdfAConversionResult { Content = outStream.ToArray(), IsPdfA = false, PageCount = pageCount };
+
+        outStream.Seek(0, SeekOrigin.Begin);
+        return new PdfAConversionResult { Content = outStream.ReadAllBytes(), IsPdfA = false, PageCount = pageCount };
       }
     }
 
@@ -652,7 +683,6 @@ namespace Rubicon.PdfService
     {
       var bookmark = new Dictionary<string, object>();
       bookmark.Add("Title", documentEntryTitle);
-      //bookmark.Add ("Style", "bold");
       bookmark.Add("Color", "0.0 0.0 0.0");
       bookmark.Add("Open", "true");
       bookmark.Add("Action", "GoTo");
@@ -673,6 +703,18 @@ namespace Rubicon.PdfService
     private PdfInfo GetPdfInfoInternal(byte[] pdfFile)
     {
       var pdfInfo = new PdfInfo();
+      switch (GetPdfAConformanceLevel())
+      {
+        case PdfAConformanceLevel.PDF_A_1B:
+          pdfInfo.ConfiguredConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_1B;
+          break;
+        case PdfAConformanceLevel.PDF_A_2B:
+          pdfInfo.ConfiguredConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_2B;
+          break;
+        default:
+          pdfInfo.ConfiguredConformanceLevel = null;
+          break;
+      }
 
       using (var stream = new MemoryStream(pdfFile))
       {
@@ -705,68 +747,58 @@ namespace Rubicon.PdfService
               break;
           }
 
-          TrySetConformanceLevel(pdfInfo, reader);
+          try
+          {
+            var xmpMeta = XmpMetaParser.Parse(reader.Metadata, null);
+            var conformance = xmpMeta.GetProperty("http://www.aiim.org/pdfa/ns/id/", "pdfaid:conformance");
+            var part = xmpMeta.GetProperty("http://www.aiim.org/pdfa/ns/id/", "pdfaid:part");
+            if (conformance != null && part != null)
+            {
+              if (conformance.Value == "A")
+              {
+                switch (part.Value)
+                {
+                  case "1":
+                    pdfInfo.ConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_1A;
+                    break;
+                  case "2":
+                    pdfInfo.ConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_2A;
+                    break;
+                  case "3":
+                    pdfInfo.ConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_3A;
+                    break;
+                }
+              }
+              else if (conformance.Value == "B")
+              {
+                switch (part.Value)
+                {
+                  case "1":
+                    pdfInfo.ConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_1B;
+                    break;
+                  case "2":
+                    pdfInfo.ConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_2B;
+                    break;
+                  case "3":
+                    pdfInfo.ConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_3B;
+                    break;
+                }
+              }
+            }
+          }
+          catch
+          {
+            // ignored
+          }
         }
       }
 
       return pdfInfo;
     }
 
-    private static void TrySetConformanceLevel(PdfInfo pdfInfo, PdfReader reader)
+    private static List<SourceDocumentInfo> GetSourceDocumentInfos(SourceDocument[] sourceFiles, Func<byte[], byte[]> modifyContents)
     {
-      if (reader.Metadata == null)
-        return;
-
-      try
-      {
-        var xmpMeta = XmpMetaParser.Parse(reader.Metadata, null);
-        var conformance = xmpMeta.GetProperty("http://www.aiim.org/pdfa/ns/id/", "pdfaid:conformance");
-        var part = xmpMeta.GetProperty("http://www.aiim.org/pdfa/ns/id/", "pdfaid:part");
-        if (conformance != null && part != null)
-        {
-          if (conformance.Value == "A")
-          {
-            switch (part.Value)
-            {
-              case "1":
-                pdfInfo.ConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_1A;
-                break;
-              case "2":
-                pdfInfo.ConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_2A;
-                break;
-              case "3":
-                pdfInfo.ConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_3A;
-                break;
-            }
-          }
-          else if (conformance.Value == "B")
-          {
-            switch (part.Value)
-            {
-              case "1":
-                pdfInfo.ConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_1B;
-                break;
-              case "2":
-                pdfInfo.ConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_2B;
-                break;
-              case "3":
-                pdfInfo.ConformanceLevel = PdfInfo.PdfConformanceEnum.PDF_A_3B;
-                break;
-            }
-          }
-        }
-      }
-      catch
-      {
-        // ignored
-      }
-    }
-
-    private void GetSourceDocumentInfos(
-      SourceDocument[] sourceFiles,
-      Func<byte[], byte[]> modifyContents,
-      List<SourceDocumentInfo> sourceDocumentInfos)
-    {
+      var sourceDocumentInfos = new List<SourceDocumentInfo>();
       foreach (var sourceDocument in sourceFiles.Where(p => p != null && p.Content != null && p.Content.Length > 0))
       {
         var sourceFilePath = Path.GetTempFileName();
@@ -781,6 +813,8 @@ namespace Rubicon.PdfService
             BookmarkStyles = sourceDocument.BookmarkStyles
           });
       }
+
+      return sourceDocumentInfos;
     }
 
     private bool MergeBookmarksIfSameTitle(Dictionary<string, object> lastBookmark, Dictionary<string, object> currentBookmark)
@@ -832,139 +866,8 @@ namespace Rubicon.PdfService
 
       try
       {
-        var totalPageCount = 0;
-        var mergedDocuments = new List<MergedDocumentInfo>();
-        using (var fileStream = File.Open(tempFilePath, FileMode.OpenOrCreate))
-        {
-          using (var document = new Document())
-          {
-            var pdfSmartCopy = new PdfSmartCopy(document, fileStream);
-            var pageOffset = 0;
-            document.Open();
-
-            Rectangle lastDocumentsLastPageSize = null;
-            var lastDocumentsLastPageRotation = 0;
-            foreach (var sourceDocumentInfo in sourceStreams)
-            {
-              var reader = new PdfReader(sourceDocumentInfo.InputStream);
-
-              try
-              {
-                reader.ConsolidateNamedDestinations();
-
-                AssertNotEncrypted(reader);
-
-                var numberOfPages = reader.NumberOfPages;
-                var bookmarks = SimpleBookmark.GetBookmark(reader);
-
-                var addBlankPage = sourceDocumentInfo.StartOnOddPage && numberOfPages > 0 && totalPageCount % 2 == 1;
-
-                var startPageAt = addBlankPage ? pageOffset + 2 : pageOffset + 1;
-                mergedDocuments.Add(
-                  new MergedDocumentInfo
-                  {
-                    Name = sourceDocumentInfo.Name,
-                    StartPage = startPageAt,
-                    Bookmarks = bookmarks,
-                    OutlineHierarchyMode = sourceDocumentInfo.OutlineHierarchyMode,
-                    BookmarkStyles = sourceDocumentInfo.BookmarkStyles
-                  });
-
-                if (addBlankPage && lastDocumentsLastPageSize != null)
-                {
-                  pageOffset++;
-                  totalPageCount++;
-                  pdfSmartCopy.AddPage(lastDocumentsLastPageSize, lastDocumentsLastPageRotation);
-                }
-
-                lastDocumentsLastPageSize = reader.GetPageSize(numberOfPages);
-                lastDocumentsLastPageRotation = reader.GetPageRotation(numberOfPages);
-
-                if (bookmarks != null)
-                  SimpleBookmark.ShiftPageNumbers(bookmarks, pageOffset, null);
-
-                for (var page = 0; page < numberOfPages;)
-                {
-                  var pdfImportedPage = pdfSmartCopy.GetImportedPage(reader, ++page);
-
-                  pdfSmartCopy.AddPage(pdfImportedPage);
-                  totalPageCount++;
-                }
-
-                var namedDestinations = SimpleNamedDestination.GetNamedDestination(reader, false);
-                pdfSmartCopy.AddNamedDestinations(namedDestinations, pageOffset);
-
-                pageOffset += numberOfPages;
-              }
-              finally
-              {
-                reader.Close();
-              }
-            }
-
-            document.Close();
-
-            if (totalPageCount == 0)
-              throw new InvalidOperationException("Cannot merge empty contents.");
-          }
-        }
-
-        using (var fileStream = File.Open(tempFilePath, FileMode.Open))
-        {
-          var reader = new PdfReader(fileStream);
-          reader.MakeRemoteNamedDestinationsLocal();
-          var stamper = new PdfStamper(reader, destination);
-
-          var outlines = new List<Dictionary<string, object>>();
-          Dictionary<string, object> lastBookmark = null;
-          foreach (var mergedDocument in mergedDocuments)
-          {
-            Dictionary<string, object> currentBookmark;
-            List<Dictionary<string, object>> subBookmarkCollection;
-            switch (mergedDocument.OutlineHierarchyMode)
-            {
-              case SourceDocument.OutlineHierarchyMode.WholeHierarchy:
-                currentBookmark = CreateSimpleBookmark(mergedDocument.Name, mergedDocument.StartPage, mergedDocument.BookmarkStyles);
-                subBookmarkCollection = AddKidsCollection(currentBookmark);
-                break;
-              case SourceDocument.OutlineHierarchyMode.DescendantsOnly:
-                currentBookmark = null;
-                subBookmarkCollection = outlines;
-                break;
-              case SourceDocument.OutlineHierarchyMode.ThisOnly:
-                currentBookmark = CreateSimpleBookmark(mergedDocument.Name, mergedDocument.StartPage, mergedDocument.BookmarkStyles);
-                subBookmarkCollection = null;
-                break;
-              case SourceDocument.OutlineHierarchyMode.None:
-                currentBookmark = null;
-                subBookmarkCollection = null;
-                break;
-              default:
-                throw new InvalidOperationException(
-                  $"Cannot handle outline hierarchy mode '{mergedDocument.OutlineHierarchyMode}'.");
-            }
-
-            if (subBookmarkCollection != null && mergedDocument.Bookmarks != null)
-              subBookmarkCollection.AddRange(mergedDocument.Bookmarks);
-
-            var isCurrentBookmarkMerged = MergeBookmarksIfSameTitle(lastBookmark, currentBookmark);
-            if (isCurrentBookmarkMerged)
-            {
-              // ReSharper disable PossibleNullReferenceException
-              if (currentBookmark.ContainsKey(KidsBookmarks))
-                lastBookmark[KidsBookmarks] = currentBookmark[KidsBookmarks];
-              // ReSharper restore PossibleNullReferenceException
-              currentBookmark = null;
-            }
-            if (currentBookmark != null)
-            {
-              outlines.Add(currentBookmark);
-              lastBookmark = currentBookmark;
-            }
-          }
-          stamper.Outlines = outlines;
-          stamper.Close();
-        }
+        var mergedDocuments = MergeToInternal(sourceStreams, tempFilePath, out var totalPageCount);
+        MergeBookmarks(tempFilePath, destination, mergedDocuments);
         return totalPageCount;
       }
       finally
@@ -980,6 +883,148 @@ namespace Rubicon.PdfService
       }
     }
 
+    private void MergeBookmarks(string tempFilePath, Stream destination, List<MergedDocumentInfo> mergedDocuments)
+    {
+      using (var fileStream = File.Open(tempFilePath, FileMode.Open))
+      {
+        var reader = new PdfReader(fileStream);
+        reader.MakeRemoteNamedDestinationsLocal();
+        var stamper = new PdfStamper(reader, destination);
+
+        var outlines = new List<Dictionary<string, object>>();
+        Dictionary<string, object> lastBookmark = null;
+        foreach (var mergedDocument in mergedDocuments)
+        {
+          Dictionary<string, object> currentBookmark;
+          List<Dictionary<string, object>> subBookmarkCollection;
+          switch (mergedDocument.OutlineHierarchyMode)
+          {
+            case SourceDocument.OutlineHierarchyMode.WholeHierarchy:
+              currentBookmark = CreateSimpleBookmark(mergedDocument.Name, mergedDocument.StartPage, mergedDocument.BookmarkStyles);
+              subBookmarkCollection = AddKidsCollection(currentBookmark);
+              break;
+            case SourceDocument.OutlineHierarchyMode.DescendantsOnly:
+              currentBookmark = null;
+              subBookmarkCollection = outlines;
+              break;
+            case SourceDocument.OutlineHierarchyMode.ThisOnly:
+              currentBookmark = CreateSimpleBookmark(mergedDocument.Name, mergedDocument.StartPage, mergedDocument.BookmarkStyles);
+              subBookmarkCollection = null;
+              break;
+            case SourceDocument.OutlineHierarchyMode.None:
+              currentBookmark = null;
+              subBookmarkCollection = null;
+              break;
+            default:
+              throw new InvalidOperationException(
+                $"Cannot handle outline hierarchy mode '{mergedDocument.OutlineHierarchyMode}'.");
+          }
+
+          if (subBookmarkCollection != null && mergedDocument.Bookmarks != null)
+            subBookmarkCollection.AddRange(mergedDocument.Bookmarks);
+
+          var isCurrentBookmarkMerged = MergeBookmarksIfSameTitle(lastBookmark, currentBookmark);
+          if (isCurrentBookmarkMerged)
+          {
+            // ReSharper disable PossibleNullReferenceException
+            if (currentBookmark.ContainsKey(KidsBookmarks))
+              lastBookmark[KidsBookmarks] = currentBookmark[KidsBookmarks];
+            // ReSharper restore PossibleNullReferenceException
+            currentBookmark = null;
+          }
+          if (currentBookmark != null)
+          {
+            outlines.Add(currentBookmark);
+            lastBookmark = currentBookmark;
+          }
+        }
+        stamper.Outlines = outlines;
+        stamper.Close();
+      }
+    }
+
+    private static List<MergedDocumentInfo> MergeToInternal(List<SourceDocumentInfo> sourceStreams, string tempFilePath, out int totalPageCount)
+    {
+      totalPageCount = 0;
+      var mergedDocuments = new List<MergedDocumentInfo>();
+      using (var fileStream = File.Open(tempFilePath, FileMode.OpenOrCreate))
+      {
+        using (var document = new Document())
+        {
+          var pdfSmartCopy = new PdfSmartCopy(document, fileStream);
+          var pageOffset = 0;
+          document.Open();
+
+          Rectangle lastDocumentsLastPageSize = null;
+          var lastDocumentsLastPageRotation = 0;
+          foreach (var sourceDocumentInfo in sourceStreams)
+          {
+            var reader = new PdfReader(sourceDocumentInfo.InputStream);
+
+            try
+            {
+              reader.ConsolidateNamedDestinations();
+
+              AssertNotEncrypted(reader);
+
+              var numberOfPages = reader.NumberOfPages;
+              var bookmarks = SimpleBookmark.GetBookmark(reader);
+
+              var addBlankPage = sourceDocumentInfo.StartOnOddPage && numberOfPages > 0 && totalPageCount % 2 == 1;
+
+              var startPageAt = addBlankPage ? pageOffset + 2 : pageOffset + 1;
+              mergedDocuments.Add(
+                new MergedDocumentInfo
+                {
+                  Name = sourceDocumentInfo.Name,
+                  StartPage = startPageAt,
+                  Bookmarks = bookmarks,
+                  OutlineHierarchyMode = sourceDocumentInfo.OutlineHierarchyMode,
+                  BookmarkStyles = sourceDocumentInfo.BookmarkStyles
+                });
+
+              if (addBlankPage && lastDocumentsLastPageSize != null)
+              {
+                pageOffset++;
+                totalPageCount++;
+                pdfSmartCopy.AddPage(lastDocumentsLastPageSize, lastDocumentsLastPageRotation);
+              }
+
+              lastDocumentsLastPageSize = reader.GetPageSize(numberOfPages);
+              lastDocumentsLastPageRotation = reader.GetPageRotation(numberOfPages);
+
+              if (bookmarks != null)
+                SimpleBookmark.ShiftPageNumbers(bookmarks, pageOffset, null);
+
+              for (var page = 0; page < numberOfPages;)
+              {
+                var pdfImportedPage = pdfSmartCopy.GetImportedPage(reader, ++page);
+
+                pdfSmartCopy.AddPage(pdfImportedPage);
+                totalPageCount++;
+              }
+
+              var namedDestinations = SimpleNamedDestination.GetNamedDestination(reader, false);
+              pdfSmartCopy.AddNamedDestinations(namedDestinations, pageOffset);
+
+              pageOffset += numberOfPages;
+            }
+            finally
+            {
+              reader.Close();
+            }
+          }
+
+          document.Close();
+
+          if (totalPageCount == 0)
+            throw new InvalidOperationException("Cannot merge empty contents.");
+        }
+      }
+
+      return mergedDocuments;
+    }
+
     private static void AssertNotEncrypted(PdfReader reader)
     {
       if (reader.IsEncrypted())
@@ -988,9 +1033,11 @@ namespace Rubicon.PdfService
 
     private byte[] ReadAllBytes(Stream inputStream)
     {
-      var stream = inputStream as MemoryStream;
-      if (stream != null)
+      if (inputStream is MemoryStream stream)
         return stream.ToArray();
+
+      if (inputStream is FileStream fileStream)
+        return fileStream.ReadAllBytes();
 
       using (var memoryStream = new MemoryStream())
       {
@@ -1017,32 +1064,7 @@ namespace Rubicon.PdfService
             destinationStream,
             effectivePageSize,
             margin,
-            (doc, writer) =>
-            {
-              using (var sourceStream = File.Open(sourceTempFile, FileMode.Open, FileAccess.Read))
-              {
-                using (var reader = new PdfReader(sourceStream))
-                {
-                  for (var i = 1; i <= reader.NumberOfPages; i++)
-                  {
-                    doc.NewPage();
-                    var page = writer.GetImportedPage(reader, i);
-                    var image = Image.GetInstance(page);
-
-                    if (IsLandscape(reader.GetPageSizeWithRotation(i)) && !isLandscape)
-                      image.RotationDegrees = -90;
-                    else if (!IsLandscape(reader.GetPageSizeWithRotation(i)) && isLandscape)
-                      image.RotationDegrees = 90;
-
-                    image.ScaleToFit(
-                      doc.PageSize.Width - doc.LeftMargin - doc.RightMargin,
-                      doc.PageSize.Height - doc.TopMargin - doc.BottomMargin);
-                    doc.Add(image);
-                  }
-                  doc.Close();
-                }
-              }
-            });
+            (doc, writer) => ResizeDocument(doc, writer, isLandscape, sourceTempFile));
         }
         return File.ReadAllBytes(destinationTempFile);
       }
@@ -1050,6 +1072,34 @@ namespace Rubicon.PdfService
       {
         DeleteFile(destinationTempFile);
         DeleteFile(sourceTempFile);
+      }
+    }
+
+    private void ResizeDocument(Document doc, PdfWriter writer, bool isLandscape, string sourceTempFile)
+    {
+      using (var sourceStream = File.Open(sourceTempFile, FileMode.Open, FileAccess.Read))
+      {
+        using (var reader = new PdfReader(sourceStream))
+        {
+          for (var i = 1; i <= reader.NumberOfPages; i++)
+          {
+            doc.NewPage();
+            var page = writer.GetImportedPage(reader, i);
+            var image = Image.GetInstance(page);
+
+            if (IsLandscape(reader.GetPageSizeWithRotation(i)) && !isLandscape)
+              image.RotationDegrees = -90;
+            else if (!IsLandscape(reader.GetPageSizeWithRotation(i)) && isLandscape)
+              image.RotationDegrees = 90;
+
+            image.ScaleToFit(
+              doc.PageSize.Width - doc.LeftMargin - doc.RightMargin,
+              doc.PageSize.Height - doc.TopMargin - doc.BottomMargin);
+            doc.Add(image);
+          }
+
+          doc.Close();
+        }
       }
     }
 
@@ -1072,7 +1122,7 @@ namespace Rubicon.PdfService
       public int StartPage { get; set; }
     }
 
-    public class PageSizeConverter
+    private protected class PageSizeConverter
     {
       public static Rectangle Convert(PageSize pageSize, bool isLandscape)
       {

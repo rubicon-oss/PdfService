@@ -49,7 +49,7 @@ namespace Rubicon.PdfService
         if (margin.HasValue)
           doc.SetMargins(margin.Value, margin.Value, margin.Value, margin.Value);
 
-        using (var writer = PdfAWriter.GetInstance(doc, destination, PdfAConformanceLevel.PDF_A_1B))
+        using (var writer = PdfAWriter.GetInstance(doc, destination, GetPdfAConformanceLevel()))
         {
           writer.CloseStream = false;
           writer.CreateXmpMetadata();
