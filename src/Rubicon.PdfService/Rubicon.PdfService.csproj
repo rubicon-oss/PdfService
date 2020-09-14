@@ -66,7 +66,6 @@
     <None Include="app.config" />
     <None Include="LICENSE.md" />
     <None Include="packages.config" />
-    <None Include="Rubicon.Pdf.Service.dll.config.xte" />
     <None Include="Rubicon.PdfService.licenseheader" />
     <None Include="Settings.settings">
       <Generator>SettingsSingleFileGenerator</Generator>
