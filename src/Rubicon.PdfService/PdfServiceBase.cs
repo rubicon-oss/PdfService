@@ -623,8 +623,10 @@ namespace Rubicon.PdfService
             {
               using (var writer = PdfAWriter.GetInstance(doc, outStream, GetPdfAConformanceLevel()))
               {
+                writer.CloseStream = false;
                 writer.CreateXmpMetadata();
                 doc.Open();
+
                 reader.ConsolidateNamedDestinations();
                 reader.MakeRemoteNamedDestinationsLocal();
                 pageCount = reader.NumberOfPages;
