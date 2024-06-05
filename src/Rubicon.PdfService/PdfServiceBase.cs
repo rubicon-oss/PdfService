@@ -16,40 +16,43 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Configuration;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.ServiceModel;
 using iTextSharp.text;
 using iTextSharp.text.exceptions;
 using iTextSharp.text.pdf;
 using iTextSharp.xmp.impl;
 using JetBrains.Annotations;
-using log4net;
 using Rubicon.PdfService.Contract;
-using FaultReason = Rubicon.PdfService.Contract.FaultReason;
-using PageSize = Rubicon.PdfService.Contract.PageSize;
-using Version = System.Version;
 
 namespace Rubicon.PdfService
 {
   public abstract class PdfServiceBase : IPdfService
   {
+    private readonly string _iccProfilePath;
+    private readonly string _iccProfileName;
+    private readonly PdfAVersion? _pdfAVersion;
+
     static PdfServiceBase()
     {
       FontFactory.RegisterDirectory(Environment.GetFolderPath(Environment.SpecialFolder.Fonts));
     }
 
-    private static readonly Lazy<ILog> s_logger = new Lazy<ILog>(()=>LogManager.GetLogger(typeof(PdfServiceBase)));
-
     private static readonly string s_rgbIccProfilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"spool\drivers\color\sRGB Color Space Profile.icm");
 
-    public const string KidsBookmarks = "Kids";
+    private const string c_kidsBookmarks = "Kids";
     private const string c_rgbIccProfileName = "sRGB IEC61966-2.1";
     private const string c_iccProfileUrl = "http://www.color.org";
 
+    protected PdfServiceBase(string iccProfilePath, string iccProfileName, PdfAVersion? pdfAVersion)
+    {
+      _iccProfilePath = iccProfilePath;
+      _iccProfileName = iccProfileName;
+      _pdfAVersion = pdfAVersion;
+    }
+    
     /// <summary>
     ///   Converts a Pdf file to a Pdf/A-1b
     /// </summary>
@@ -61,38 +64,38 @@ namespace Rubicon.PdfService
       if (info.ConformanceLevel == info.ConfiguredConformanceLevel && info.ConfiguredConformanceLevel != null)
         return new PdfAConversionResult { IsPdfA = true, PageCount = info.PageCount };
 
-      return ExecWithLogging(() => ConvertToPdfAInternal(pdfFile));
+      return ExecWithMonitoring(() => ConvertToPdfAInternal(pdfFile));
     }
 
     public virtual PdfInfo GetPdfInfo(byte[] pdfFile)
     {
-      return ExecWithLogging(() => GetPdfInfoInternal(pdfFile));
+      return ExecWithMonitoring(() => GetPdfInfoInternal(pdfFile));
     }
 
-    public virtual byte[] ConvertImage(byte[] imageData, PageSize pageSize, int? margins)
+    public virtual byte[] ConvertImage(byte[] imageData, Contract.PageSize pageSize, int? margins)
     {
-      return ExecWithLogging(() => ConvertImageInternal(imageData, pageSize, margins));
+      return ExecWithMonitoring(() => ConvertImageInternal(imageData, pageSize, margins));
     }
 
     public virtual Result Merge(SourceDocument[] pdfFiles)
     {
-      return ExecWithLogging(() => MergeModifiedContents(pdfFiles, c => c));
+      return ExecWithMonitoring(() => MergeModifiedContents(pdfFiles, c => c));
     }
 
-    public virtual Result ResizeMerge(SourceDocument[] pdfFiles, PageSize pageSize, bool isLandscape)
+    public virtual Result ResizeMerge(SourceDocument[] pdfFiles, Contract.PageSize pageSize, bool isLandscape)
     {
-      return ExecWithLogging(
+      return ExecWithMonitoring(
         () => MergeModifiedContents(pdfFiles, c => Resize(c, pageSize, isLandscape, 10)));
     }
 
-    public virtual byte[] Resize(byte[] pdfFile, PageSize pageSize, bool isLandscape, int margin)
+    public virtual byte[] Resize(byte[] pdfFile, Contract.PageSize pageSize, bool isLandscape, int margin)
     {
-      return ExecWithLogging(() => ResizeInternal(pdfFile, pageSize, isLandscape, margin));
+      return ExecWithMonitoring(() => ResizeInternal(pdfFile, pageSize, isLandscape, margin));
     }
 
-    public virtual byte[] CreateNewPdfWithCenteredText(string[] lines, string fontName, float fontSize, PageSize pageSize, bool isLandscape)
+    public virtual byte[] CreateNewPdfWithCenteredText(string[] lines, string fontName, float fontSize, Contract.PageSize pageSize, bool isLandscape)
     {
-      return ExecWithLogging(() => CreateNewPdfWithCenteredTextInternal(lines, fontName, fontSize, pageSize, isLandscape));
+      return ExecWithMonitoring(() => CreateNewPdfWithCenteredTextInternal(lines, fontName, fontSize, pageSize, isLandscape));
     }
 
     public byte[] AddPageNumbers(
@@ -105,13 +108,13 @@ namespace Rubicon.PdfService
       float margin)
     {
       return
-        ExecWithLogging(
+        ExecWithMonitoring(
           () => AddPageNumbersInternal(pdfFile, pagesToSkipBeforeNumbering, firstPageNumberToUse, totalPageCount, fontName, fontSize, margin));
     }
 
     public int GetNumberOfPages(byte[] pdfFile)
     {
-      return ExecWithLogging(() => GetNumberOfPagesInternal(pdfFile));
+      return ExecWithMonitoring(() => GetNumberOfPagesInternal(pdfFile));
     }
 
     private int GetNumberOfPagesInternal(byte[] pdfFile)
@@ -133,7 +136,7 @@ namespace Rubicon.PdfService
       float fontSize,
       float margin)
     {
-      return ExecWithLogging(() => AddOverlayInternal(pdfFile, pageOverlayText, verticalPlacement, horizontalPlacement, fontName, fontSize, margin));
+      return ExecWithMonitoring(() => AddOverlayInternal(pdfFile, pageOverlayText, verticalPlacement, horizontalPlacement, fontName, fontSize, margin));
     }
 
     private byte[] AddOverlayInternal(
@@ -261,7 +264,7 @@ namespace Rubicon.PdfService
       string[] lines,
       string fontName,
       float fontSize,
-      PageSize pageSize,
+      Contract.PageSize pageSize,
       bool isLandscape)
     {
       CheckNotNullOrEmpty(lines, "lines");
@@ -295,36 +298,31 @@ namespace Rubicon.PdfService
     protected void EnsureIccProfile(PdfAWriter pdfWriter)
     {
       var rgbIccProfilePath = s_rgbIccProfilePath;
-      if (!string.IsNullOrEmpty(Settings.Default.RgbIccProfilePath))
-        rgbIccProfilePath = Settings.Default.RgbIccProfilePath;
+      if (!string.IsNullOrEmpty(_iccProfilePath))
+        rgbIccProfilePath = _iccProfilePath;
 
       var rgbIccProfileName = c_rgbIccProfileName;
-      if (!string.IsNullOrEmpty(Settings.Default.RbIccProfileName))
-        rgbIccProfileName = Settings.Default.RbIccProfileName;
+      if (!string.IsNullOrEmpty(_iccProfileName))
+        rgbIccProfileName = _iccProfileName;
 
       var icc = ICC_Profile.GetInstance(rgbIccProfilePath);
       pdfWriter.SetOutputIntents("Custom", "", c_iccProfileUrl, rgbIccProfileName, icc);
     }
 
-    private T ExecWithLogging<T>(Func<T> func)
+    private T ExecWithMonitoring<T>(Func<T> func)
     {
       try
       {
         return func();
       }
-      catch (BadPasswordException e)
+      catch (BadPasswordException)
       {
-        s_logger.Value.Error(e.Message, e);
-        throw new FaultException(FaultReason.DocumentIsPasswordProtected);
+        Console.WriteLine(ErrorMessages.DocumentIsPasswordProtected);
+        throw;
       }
-      catch (InvalidPdfException e)
+      catch (InvalidPdfException)
       {
-        s_logger.Value.Error(e.Message, e);
-        throw new FaultException(FaultReason.DocumentIsInvalid);
-      }
-      catch (Exception e)
-      {
-        s_logger.Value.Error(e.Message, e);
+        Console.WriteLine(ErrorMessages.DocumentIsInvalid);
         throw;
       }
     }
@@ -463,7 +461,7 @@ namespace Rubicon.PdfService
     private List<Dictionary<string, object>> AddKidsCollection(Dictionary<string, object> currentBookmark)
     {
       var collection = new List<Dictionary<string, object>>();
-      currentBookmark.Add(KidsBookmarks, collection);
+      currentBookmark.Add(c_kidsBookmarks, collection);
       return collection;
     }
 
@@ -576,7 +574,7 @@ namespace Rubicon.PdfService
       }
     }
 
-    private byte[] ConvertImageInternal(byte[] imageData, PageSize pageSize, int? margins)
+    private byte[] ConvertImageInternal(byte[] imageData, Contract.PageSize pageSize, int? margins)
     {
       CheckNotNullOrEmpty(imageData, "imageData");
 
@@ -599,15 +597,12 @@ namespace Rubicon.PdfService
 
     protected PdfAConformanceLevel GetPdfAConformanceLevel()
     {
-      switch (Settings.Default.PdfAHeaderVersion)
+      return _pdfAVersion switch
       {
-        case "PdfA1b":
-          return PdfAConformanceLevel.PDF_A_1B;
-        case "PdfA2b":
-          return PdfAConformanceLevel.PDF_A_2B;
-        default:
-          throw new ConfigurationErrorsException($"Unknow value: \"{ Settings.Default.PdfAHeaderVersion }\". Possible value: \"PdfA1b\",\"PdfA2b\"");
-      }
+        PdfAVersion.PdfA1b => PdfAConformanceLevel.PDF_A_1B,
+        PdfAVersion.PdfA2b => PdfAConformanceLevel.PDF_A_2B,
+        _ => throw new InvalidOperationException($"Unknown value: \"{_pdfAVersion}\".")
+      };
     }
 
     private PdfAConversionResult ConvertToPdfAInternal(byte[] pdfFile)
@@ -727,25 +722,25 @@ namespace Rubicon.PdfService
           switch (versionChar)
           {
             case '1':
-              pdfInfo.Version = new Version(1, 1);
+              pdfInfo.Version = new System.Version(1, 1);
               break;
             case '2':
-              pdfInfo.Version = new Version(1, 2);
+              pdfInfo.Version = new System.Version(1, 2);
               break;
             case '3':
-              pdfInfo.Version = new Version(1, 3);
+              pdfInfo.Version = new System.Version(1, 3);
               break;
             case '4':
-              pdfInfo.Version = new Version(1, 4);
+              pdfInfo.Version = new System.Version(1, 4);
               break;
             case '5':
-              pdfInfo.Version = new Version(1, 5);
+              pdfInfo.Version = new System.Version(1, 5);
               break;
             case '6':
-              pdfInfo.Version = new Version(1, 6);
+              pdfInfo.Version = new System.Version(1, 6);
               break;
             case '7':
-              pdfInfo.Version = new Version(1, 7);
+              pdfInfo.Version = new System.Version(1, 7);
               break;
           }
 
@@ -829,17 +824,17 @@ namespace Rubicon.PdfService
       if (string.Equals(lastTitle, currentTitle))
       {
         object lastBookmarkKids;
-        lastBookmark.TryGetValue(KidsBookmarks, out lastBookmarkKids);
+        lastBookmark.TryGetValue(c_kidsBookmarks, out lastBookmarkKids);
         object currentBookmarkKids;
-        lastBookmark.TryGetValue(KidsBookmarks, out currentBookmarkKids);
+        lastBookmark.TryGetValue(c_kidsBookmarks, out currentBookmarkKids);
 
         if (currentBookmarkKids == null)
           return true;
 
         if (lastBookmarkKids == null)
         {
-          lastBookmark.Add(KidsBookmarks, currentBookmarkKids);
-          currentBookmark.Remove(KidsBookmarks);
+          lastBookmark.Add(c_kidsBookmarks, currentBookmarkKids);
+          currentBookmark.Remove(c_kidsBookmarks);
         }
         else
           ((List<Dictionary<string, object>>)lastBookmarkKids).AddRange((List<Dictionary<string, object>>)currentBookmarkKids);
@@ -929,8 +924,8 @@ namespace Rubicon.PdfService
           if (isCurrentBookmarkMerged)
           {
             // ReSharper disable PossibleNullReferenceException
-            if (currentBookmark.ContainsKey(KidsBookmarks))
-              lastBookmark[KidsBookmarks] = currentBookmark[KidsBookmarks];
+            if (currentBookmark.ContainsKey(c_kidsBookmarks))
+              lastBookmark[c_kidsBookmarks] = currentBookmark[c_kidsBookmarks];
             // ReSharper restore PossibleNullReferenceException
             currentBookmark = null;
           }
@@ -1048,7 +1043,7 @@ namespace Rubicon.PdfService
       }
     }
 
-    private byte[] ResizeInternal(byte[] source, PageSize pageSize, bool isLandscape, int margin)
+    private byte[] ResizeInternal(byte[] source, Contract.PageSize pageSize, bool isLandscape, int margin)
     {
       CheckNotNullOrEmpty(source, "source");
 
@@ -1124,86 +1119,86 @@ namespace Rubicon.PdfService
       public int StartPage { get; set; }
     }
 
-    private protected class PageSizeConverter
+    private class PageSizeConverter
     {
-      public static Rectangle Convert(PageSize pageSize, bool isLandscape)
+      public static Rectangle Convert(Contract.PageSize pageSize, bool isLandscape)
       {
         Rectangle rectangle;
         switch (pageSize)
         {
-          case PageSize.A0:
+          case Contract.PageSize.A0:
             rectangle = iTextSharp.text.PageSize.A0;
             break;
-          case PageSize.A1:
+          case Contract.PageSize.A1:
             rectangle = iTextSharp.text.PageSize.A1;
             break;
-          case PageSize.A2:
+          case Contract.PageSize.A2:
             rectangle = iTextSharp.text.PageSize.A2;
             break;
-          case PageSize.A3:
+          case Contract.PageSize.A3:
             rectangle = iTextSharp.text.PageSize.A3;
             break;
-          case PageSize.A4:
+          case Contract.PageSize.A4:
             rectangle = iTextSharp.text.PageSize.A4;
             break;
-          case PageSize.A5:
+          case Contract.PageSize.A5:
             rectangle = iTextSharp.text.PageSize.A5;
             break;
-          case PageSize.A6:
+          case Contract.PageSize.A6:
             rectangle = iTextSharp.text.PageSize.A6;
             break;
-          case PageSize.A7:
+          case Contract.PageSize.A7:
             rectangle = iTextSharp.text.PageSize.A7;
             break;
-          case PageSize.A8:
+          case Contract.PageSize.A8:
             rectangle = iTextSharp.text.PageSize.A8;
             break;
-          case PageSize.A9:
+          case Contract.PageSize.A9:
             rectangle = iTextSharp.text.PageSize.A9;
             break;
-          case PageSize.A10:
+          case Contract.PageSize.A10:
             rectangle = iTextSharp.text.PageSize.A10;
             break;
-          case PageSize.B0:
+          case Contract.PageSize.B0:
             rectangle = iTextSharp.text.PageSize.B0;
             break;
-          case PageSize.B1:
+          case Contract.PageSize.B1:
             rectangle = iTextSharp.text.PageSize.B1;
             break;
-          case PageSize.B2:
+          case Contract.PageSize.B2:
             rectangle = iTextSharp.text.PageSize.B2;
             break;
-          case PageSize.B3:
+          case Contract.PageSize.B3:
             rectangle = iTextSharp.text.PageSize.B3;
             break;
-          case PageSize.B4:
+          case Contract.PageSize.B4:
             rectangle = iTextSharp.text.PageSize.B4;
             break;
-          case PageSize.B5:
+          case Contract.PageSize.B5:
             rectangle = iTextSharp.text.PageSize.B5;
             break;
-          case PageSize.B6:
+          case Contract.PageSize.B6:
             rectangle = iTextSharp.text.PageSize.B6;
             break;
-          case PageSize.B7:
+          case Contract.PageSize.B7:
             rectangle = iTextSharp.text.PageSize.B7;
             break;
-          case PageSize.B8:
+          case Contract.PageSize.B8:
             rectangle = iTextSharp.text.PageSize.B8;
             break;
-          case PageSize.B9:
+          case Contract.PageSize.B9:
             rectangle = iTextSharp.text.PageSize.B9;
             break;
-          case PageSize.B10:
+          case Contract.PageSize.B10:
             rectangle = iTextSharp.text.PageSize.B10;
             break;
-          case PageSize.LETTER:
+          case Contract.PageSize.LETTER:
             rectangle = iTextSharp.text.PageSize.LETTER;
             break;
-          case PageSize.LEGAL:
+          case Contract.PageSize.LEGAL:
             rectangle = iTextSharp.text.PageSize.LEGAL;
             break;
-          case PageSize.POSTCARD:
+          case Contract.PageSize.POSTCARD:
             rectangle = iTextSharp.text.PageSize.POSTCARD;
             break;
           default:
