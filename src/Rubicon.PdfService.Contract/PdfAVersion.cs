@@ -13,10 +13,10 @@
 // You should have received a copy of the GNU Lesser General Public
 // License along with this library; if not, see <http://www.gnu.org/licenses/>.
 
-namespace Rubicon.PdfService.Contract
-{
-  public interface IPdfAServiceImplementation
-  {
+namespace Rubicon.PdfService.Contract;
 
-  }
+public enum PdfAVersion
+{
+  PdfA1b,
+  PdfA2b
 }

@@ -17,7 +17,7 @@ using System.Xml.Serialization;
 
 namespace Rubicon.PdfService.Contract
 {
-  [XmlRoot(Namespace = "http://www.rubicon.eu/Rubicon.Pdf.Service/v1/PdfAConversionResult")]
+  [XmlRoot(Namespace = "https://www.rubicon.eu/Rubicon.Pdf.Service/v1/PdfAConversionResult")]
   public class PdfAConversionResult
   {
     public byte[] Content;

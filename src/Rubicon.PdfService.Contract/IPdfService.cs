@@ -13,11 +13,8 @@
 // You should have received a copy of the GNU Lesser General Public
 // License along with this library; if not, see <http://www.gnu.org/licenses/>.
 
-using System.ServiceModel;
-
 namespace Rubicon.PdfService.Contract
 {
-  [ServiceContract(Namespace = "http://www.rubicon.eu/Rubicon.Pdf.Service/v1/")]
   public interface IPdfService
   {
     /// <summary>
@@ -27,7 +24,6 @@ namespace Rubicon.PdfService.Contract
     /// <param name="pageSize">Destination page size of Pdf</param>
     /// <param name="margins">Margins around the images</param>
     /// <returns>Returns a byte array</returns>
-    [OperationContract]
     byte[] ConvertImage(byte[] imageData, PageSize pageSize, int? margins);
 
     /// <summary>
@@ -35,7 +31,6 @@ namespace Rubicon.PdfService.Contract
     /// </summary>
     /// <param name="pdfFiles">all Pdf files to merge</param>
     /// <returns>Returns the Result <see cref="Result"/></returns>
-    [OperationContract]
     Result Merge(SourceDocument[] pdfFiles);
 
     /// <summary>
@@ -45,7 +40,6 @@ namespace Rubicon.PdfService.Contract
     /// <param name="pageSize">The page size for the destination Pdf</param>
     /// <param name="isLandscape">The orientation of the destination Pdf</param>
     /// <returns>Returns the Result <see cref="Result"/></returns>
-    [OperationContract]
     Result ResizeMerge(SourceDocument[] pdfFiles, PageSize pageSize, bool isLandscape);
 
     /// <summary>
@@ -56,7 +50,6 @@ namespace Rubicon.PdfService.Contract
     /// <param name="isLandscape">The orientation of the destination Pdf</param>
     /// <param name="margin">Margin</param>
     /// <returns>Returns a byte array</returns>
-    [OperationContract]
     byte[] Resize(byte[] pdfFile, PageSize pageSize, bool isLandscape, int margin);
 
     /// <summary>
@@ -68,7 +61,6 @@ namespace Rubicon.PdfService.Contract
     /// <param name="pageSize">The page size</param>
     /// <param name="isLandscape">The orientation</param>
     /// <returns>Returns a byte array</returns>
-    [OperationContract]
     byte[] CreateNewPdfWithCenteredText(string[] lines, string fontName, float fontSize, PageSize pageSize, bool isLandscape);
 
     /// <summary>
@@ -76,7 +68,6 @@ namespace Rubicon.PdfService.Contract
     /// </summary>
     /// <param name="pdfFile">The byte array of the Pdf file</param>
     /// <returns>Returns a byte array</returns>
-    [OperationContract]
     int GetNumberOfPages(byte[] pdfFile);
 
     /// <summary>
@@ -95,7 +86,6 @@ namespace Rubicon.PdfService.Contract
     /// <param name="fontSize">The font size</param>
     /// <param name="margin">Margin</param>
     /// <returns>The original PDF document with added page numbers.</returns>
-    [OperationContract]
     byte[] AddPageNumbers(byte[] pdfFile, int pagesToSkipBeforeNumbering, int firstPageNumberToUse, int? totalPageCount, string fontName, float fontSize, float margin);
 
     /// <summary>
@@ -114,7 +104,6 @@ namespace Rubicon.PdfService.Contract
     /// <param name="fontSize">The font size</param>
     /// <param name="margin">Margin</param>
     /// <returns>The original <paramref name="pdfFile"/> with the added overlays.</returns>
-    [OperationContract]
     byte[] AddOverlay(byte[] pdfFile, string pageOverlayText, OverlayPlacementVertical verticalPlacement, OverlayPlacementHorizontal horizontalPlacement, string fontName, float fontSize, float margin);
 
 
@@ -123,10 +112,8 @@ namespace Rubicon.PdfService.Contract
     /// </summary>
     /// <param name="pdfFile">Image byte array</param>
     /// <returns>Returns a PdfAConversionResult</returns>
-    [OperationContract]
     PdfAConversionResult ConvertToPdfA(byte[] pdfFile);
 
-    [OperationContract]
     PdfInfo GetPdfInfo(byte[] pdfFile);
   }
 }

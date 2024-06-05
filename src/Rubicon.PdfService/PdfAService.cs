@@ -15,7 +15,6 @@
 
 using System;
 using System.IO;
-using System.ServiceModel;
 using iTextSharp.text;
 using iTextSharp.text.pdf;
 using Rubicon.PdfService.Contract;
@@ -23,9 +22,13 @@ using PageSize = iTextSharp.text.PageSize;
 
 namespace Rubicon.PdfService
 {
-  [ServiceBehavior(InstanceContextMode = InstanceContextMode.Single, IncludeExceptionDetailInFaults = true)]
-  public class PdfAService : PdfServiceBase, IPdfAServiceImplementation
+  public class PdfAService : PdfServiceBase
   {
+    public PdfAService(string iccProfilePath, string iccProfileName, PdfAVersion? pdfAVersion)
+      : base(iccProfilePath, iccProfileName, pdfAVersion)
+    {
+    }
+
     protected override Font GetFont(string name, float size)
     {
       var font = FontFactory.GetFont(name, BaseFont.IDENTITY_H, BaseFont.EMBEDDED, size, Font.NORMAL, BaseColor.BLACK, true);
@@ -59,6 +62,7 @@ namespace Rubicon.PdfService
         }
       }
     }
+
     protected override void AdjustImage(Image img)
     {
       base.AdjustImage(img);

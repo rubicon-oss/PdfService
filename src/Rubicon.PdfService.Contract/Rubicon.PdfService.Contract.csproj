@@ -12,6 +12,7 @@
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
+    <LangVersion>default</LangVersion>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -33,25 +34,22 @@
   <ItemGroup>
     <Reference Include="System" />
     <Reference Include="System.Core" />
-    <Reference Include="System.ServiceModel" />
     <Reference Include="System.Xml.Linq" />
-    <Reference Include="System.Data.DataSetExtensions" />
     <Reference Include="Microsoft.CSharp" />
-    <Reference Include="System.Data" />
-    <Reference Include="System.Net.Http" />
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="DocumentInvalidException.cs" />
     <Compile Include="DocumentPasswordProtectedException.cs" />
-    <Compile Include="FaultReason.cs" />
-    <Compile Include="IPdfAServiceImplementation.cs" />
+    <Compile Include="ErrorMessages.cs" />
     <Compile Include="IPdfService.cs" />
-    <Compile Include="IPdfServiceImplementation.cs" />
+    <Compile Include="Mode.cs" />
+    <Compile Include="Orientation.cs" />
     <Compile Include="OverlayPlacementHorizontal.cs" />
     <Compile Include="OverlayPlacementVertical.cs" />
     <Compile Include="PageSize.cs" />
     <Compile Include="PdfAConversionResult.cs" />
+    <Compile Include="PdfAVersion.cs" />
     <Compile Include="PdfEncryptedException.cs" />
     <Compile Include="PdfInfo.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
