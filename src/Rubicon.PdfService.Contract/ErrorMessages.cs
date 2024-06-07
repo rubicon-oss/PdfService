@@ -13,17 +13,10 @@
 // You should have received a copy of the GNU Lesser General Public
 // License along with this library; if not, see <http://www.gnu.org/licenses/>.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+namespace Rubicon.PdfService.Contract;
 
-namespace Rubicon.PdfService.Contract
+public static class ErrorMessages
 {
-  public static class FaultReason
-  {
-    public const string DocumentIsPasswordProtected = "PdfDocumentIsPasswordProtected";
-    public const string DocumentIsInvalid = "PdfDocumentIsInvalid";
-  }
+  public const string DocumentIsPasswordProtected = "!!!DocumentIsPasswordProtected!!!";
+  public const string DocumentIsInvalid = "!!!DocumentIsInvalid!!!";
 }
