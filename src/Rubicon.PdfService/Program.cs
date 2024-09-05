@@ -21,6 +21,7 @@ using System.CommandLine.Invocation;
 using System.CommandLine.Parsing;
 using System.IO;
 using System.Linq;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
@@ -62,7 +63,8 @@ public static class Program
   private static readonly Option<FileInfo> s_pageOverlayTextOption = new(["--overlaytext", "-ot"], "The file that contains the text for the overlay") { IsRequired = true };
   private static readonly Option<OverlayPlacementVertical> s_verticalPlacementOption = new(["--vertical", "-v"], "The vertical position the overlay should be placed in.") { IsRequired = true };
   private static readonly Option<OverlayPlacementHorizontal> s_horizontalPlacementOption = new(["--horizontal", "-h"], "The horizontal position the overlay should be placed in.") { IsRequired = true };
-
+  private static readonly Option<bool> s_partialRead = new(["--partialread", "-pr"], "Whether to use partial reads");
+  
   public static int Main(string[] args)
   {
     var rootCommand = new RootCommand("Convert into PDF or PDF/A");
@@ -152,11 +154,20 @@ public static class Program
     var getPdfInfoCommand = new Command("GetPdfInfo", "Get information about the PDF file.");
     getPdfInfoCommand.AddOption(s_inputOption);
     getPdfInfoCommand.AddOption(s_outputOption);
+    getPdfInfoCommand.AddOption(s_partialRead);
     getPdfInfoCommand.SetHandler(HandlerForGetPdfInfo);
     rootCommand.Add(getPdfInfoCommand);
 
     var commandLineBuilder = new CommandLineBuilder(rootCommand)
-      .UseDefaults()
+      .RegisterWithDotnetSuggest()
+      .CancelOnProcessTermination()
+      .UseVersionOption()
+      .UseEnvironmentVariableDirective()
+      .UseParseDirective()
+      .UseSuggestDirective()
+      .UseTypoCorrections()
+      .UseExceptionHandler()
+      .UseParseErrorReporting(c_invalidArguments)
       .UseHelp(context =>
       {
         context.HelpBuilder.CustomizeLayout(_ =>
@@ -176,28 +187,25 @@ public static class Program
       .Build();
 
     var result = commandLineBuilder.Invoke(args);
-    if (s_returnCode == c_success && result != 0)
-      s_returnCode = c_invalidArguments;
 
-    return s_returnCode;
+    return s_returnCode == c_success
+      ? result
+      : s_returnCode;
   }
 
   private static void HandlerForGetPdfInfo(InvocationContext context)
   {
     ProcessWithTimeout(context, ctx =>
     {
-      var inputFileContent = ReadFile(ctx);
-
       PdfInfo result;
       try
       {
-        var pdfService = GetService(ctx);
-        result = pdfService.GetPdfInfo(inputFileContent);
+        result = GetService(ctx).GetPdfInfo(context.ParseResult.GetValueForOption(s_inputOption), context.ParseResult.GetValueForOption(s_partialRead));
       }
       catch (Exception ex)
       {
         s_returnCode = c_processingError;
-        throw new InvalidOperationException("Unable to convert to PDF/A.", ex);
+        throw new InvalidOperationException("Unable to get PDF info.", ex);
       }
 
       WriteXmlFile(ctx, result);
@@ -439,14 +447,24 @@ public static class Program
   private static void ProcessWithTimeout(InvocationContext context, Action<InvocationContext> action)
   {
     var timeout = context.ParseResult.GetValueForOption(s_timeoutOption);
-
-    var task = Task.Run(() => { action(context); });
-
-    if (!task.Wait(TimeSpan.FromMilliseconds(timeout)))
-      s_returnCode = c_timeout;
+    var cancellationToken = context.GetCancellationToken();
+    var task = Task.Run(() => action(context), cancellationToken);
+    try
+    {
+      if (task.Wait(timeout, cancellationToken))
+        return;
+    } 
+    catch (AggregateException ex)
+    {
+      if (ex.InnerExceptions.Count == 1) 
+        ExceptionDispatchInfo.Capture(ex.InnerExceptions[0]).Throw();
+      throw;
+    }
+    s_returnCode = c_timeout;
+    Console.Error.WriteLine($"Operation timed out after {timeout} ms.");
   }
 
-  private static IPdfService GetService(InvocationContext context)
+  private static PdfServiceBase GetService(InvocationContext context)
   {
     var mode = context.ParseResult.GetValueForOption(s_modeOption);
     var iccProfilePath = context.ParseResult.GetValueForOption(s_iccProfilePathOption);
