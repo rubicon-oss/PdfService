@@ -64,6 +64,7 @@ public static class Program
   private static readonly Option<OverlayPlacementVertical> s_verticalPlacementOption = new(["--vertical", "-v"], "The vertical position the overlay should be placed in.") { IsRequired = true };
   private static readonly Option<OverlayPlacementHorizontal> s_horizontalPlacementOption = new(["--horizontal", "-h"], "The horizontal position the overlay should be placed in.") { IsRequired = true };
   private static readonly Option<bool> s_partialRead = new(["--partialread", "-pr"], "Whether to use partial reads");
+  private static readonly Option<long?> s_partialReadThreshold = new(["--partialreadthreshold", "-prt"], "File size threshold in bytes for use of partial reads");
   
   public static int Main(string[] args)
   {
@@ -86,6 +87,7 @@ public static class Program
     var mergeCommand = new Command("Merge", "Merge multiple PDF files into a single PDF file.");
     mergeCommand.AddOption(s_multipleInputsOption);
     mergeCommand.AddOption(s_outputOption);
+    mergeCommand.AddOption(s_partialReadThreshold);
     mergeCommand.SetHandler(HandlerForMerge);
     rootCommand.Add(mergeCommand);
 
@@ -393,29 +395,48 @@ public static class Program
       Console.WriteLine(result.PageCount);
     });
   }
-
+  
   private static void HandlerForMerge(InvocationContext context)
   {
     ProcessWithTimeout(context, ctx =>
     {
+      var partialReadThreshold = ctx.ParseResult.GetValueForOption(s_partialReadThreshold);
+      var outputFilename = context.ParseResult.GetValueForOption(s_outputOption);
       var multipleInputFiles = ctx.ParseResult.GetValueForOption(s_multipleInputsOption);
-
-      var inputContents = GetSourceDocuments(multipleInputFiles);
-
-      Result result;
+      var sourceDocumentInfos = GetSourceDocumentInfos(multipleInputFiles);
+      var pdfService = GetService(ctx);
+      
+      FileStream outputFileStream;
       try
       {
-        var pdfService = GetService(ctx);
-        result = pdfService.Merge(inputContents);
+        outputFileStream = new FileStream(outputFilename.FullName, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 4096);
       }
       catch (Exception ex)
       {
+        s_returnCode = c_outputFileError;
+        throw new InvalidOperationException($"Unable to create output file '{outputFilename.FullName}'.", ex);
+      }
+      try
+      {
+        using (outputFileStream)
+        {
+          var pageCount = pdfService.Merge(sourceDocumentInfos, outputFileStream, partialReadThreshold);
+          Console.WriteLine(pageCount);
+        }
+      }
+      catch (Exception ex)
+      {
+        try
+        {
+          outputFilename.Delete();
+        }
+        catch
+        {
+          // ignore
+        }
         s_returnCode = c_processingError;
         throw new InvalidOperationException("Unable to merge PDF files.", ex);
       }
-
-      WriteFile(ctx, result.Content);
-      Console.WriteLine(result.PageCount);
     });
   }
 
@@ -479,6 +500,20 @@ public static class Program
     };
   }
 
+  private static SourceDocumentInfo[] GetSourceDocumentInfos(FileInfo[] multipleInputFiles)
+  {
+    var sourceDocumentInfos = new SourceDocumentInfo[multipleInputFiles.Length];
+    var xmlSerializer = new XmlSerializer(typeof(SourceDocumentInfo));
+    for (var i = 0; i < multipleInputFiles.Length; i++)
+    {
+      using (var xmlReader = new XmlTextReader(multipleInputFiles[i].FullName))
+      {
+        sourceDocumentInfos[i] = (SourceDocumentInfo)xmlSerializer.Deserialize(xmlReader);
+      }
+    }
+    return sourceDocumentInfos;
+  }
+  
   private static SourceDocument[] GetSourceDocuments(FileInfo[] multipleInputFiles)
   {
     var inputContents = new SourceDocument[multipleInputFiles.Length];
