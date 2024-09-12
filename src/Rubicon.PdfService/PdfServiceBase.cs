@@ -74,7 +74,7 @@ namespace Rubicon.PdfService
     
     public PdfInfo GetPdfInfo(FileInfo pdfFileInfo, bool partialRead)
     {
-      return ExecWithMonitoring(() => GetPdfInfoInternal(() => new PdfReader(new RandomAccessFileOrArray(pdfFileInfo.FullName, forceRead: !partialRead), null, partial: partialRead)));
+      return ExecWithMonitoring(() => GetPdfInfoInternal(() => new PdfReader(new RandomAccessFileOrArray(pdfFileInfo.FullName, forceRead: false), null, partial: partialRead)));
     }
 
     public virtual byte[] ConvertImage(byte[] imageData, Contract.PageSize pageSize, int? margins)
@@ -85,6 +85,11 @@ namespace Rubicon.PdfService
     public virtual Result Merge(SourceDocument[] pdfFiles)
     {
       return ExecWithMonitoring(() => MergeModifiedContents(pdfFiles, c => c));
+    }
+    
+    public int Merge([NotNull] [ItemNotNull] Contract.SourceDocumentInfo[] sourceDocumentInfos, [NotNull] Stream outputStream, [CanBeNull] long? partialReadThreshold)
+    {
+      return ExecWithMonitoring(() => MergeInternal(sourceDocumentInfos, outputStream, partialReadThreshold));
     }
 
     public virtual Result ResizeMerge(SourceDocument[] pdfFiles, Contract.PageSize pageSize, bool isLandscape)
@@ -375,7 +380,82 @@ namespace Rubicon.PdfService
     {
       return r.Width > r.Height;
     }
+    
+    private int MergeInternal([NotNull] [ItemNotNull] Contract.SourceDocumentInfo[] sourceDocumentInfos, [NotNull] Stream outputStream, [CanBeNull] long? partialReadThreshold)
+    {
+      CheckNotNullOrEmpty(sourceDocumentInfos, nameof(sourceDocumentInfos));
+      CheckNotNull(outputStream, nameof(outputStream));
+      
+      var totalPageCount = 0;
+      var outlines = new List<Dictionary<string, object>>(sourceDocumentInfos.Length);
+      Dictionary<string, object> previousBookmark = null;
+      
+      using (var document = new Document())
+      using (var pdfSmartCopy = new PdfSmartCopy(document, outputStream))
+      {
+        var pageOffset = 0;
+        document.Open();
 
+        Rectangle previousDocumentLastPageSize = null;
+        var previousDocumentLastPageRotation = 0;
+        
+        foreach (var sourceDocumentInfo in sourceDocumentInfos)
+        {
+          if (sourceDocumentInfo.FilePath is null)
+            throw new ArgumentNullException($"{nameof(Contract.SourceDocumentInfo)}.{nameof(Contract.SourceDocumentInfo.FilePath)}");
+          
+          var sourceFileInfo = new FileInfo(sourceDocumentInfo.FilePath);
+          if (!sourceFileInfo.Exists)
+            throw new ArgumentException($"Source file does not exist: '{sourceFileInfo.FullName}'.", $"{nameof(Contract.SourceDocumentInfo)}.{nameof(Contract.SourceDocumentInfo.FilePath)}");
+          
+          if (sourceFileInfo.Length == 0)
+            continue;
+          
+          using (var reader = new PdfReader(new RandomAccessFileOrArray(sourceDocumentInfo.FilePath, forceRead: false), null, partial: sourceFileInfo.Length >= partialReadThreshold))
+          {
+            AssertNotEncrypted(reader);
+            reader.ConsolidateNamedDestinations();
+
+            var numberOfPages = reader.NumberOfPages;
+            var bookmarks = SimpleBookmark.GetBookmark(reader);
+            var addBlankPage = sourceDocumentInfo.StartOnOddPage && numberOfPages > 0 && totalPageCount % 2 == 1;
+            var startPageAt = addBlankPage ? pageOffset + 2 : pageOffset + 1;
+            
+            if (addBlankPage && previousDocumentLastPageSize != null)
+            {
+              pageOffset++;
+              totalPageCount++;
+              pdfSmartCopy.AddPage(previousDocumentLastPageSize, previousDocumentLastPageRotation);
+            }
+
+            previousDocumentLastPageSize = reader.GetPageSize(numberOfPages);
+            previousDocumentLastPageRotation = reader.GetPageRotation(numberOfPages);
+
+            if (bookmarks != null)
+              SimpleBookmark.ShiftPageNumbers(bookmarks, pageOffset, null);
+
+            for (var page = 1; page <= numberOfPages; page++)
+            {
+              pdfSmartCopy.AddPage(pdfSmartCopy.GetImportedPage(reader, page));
+              totalPageCount++;
+            }
+
+            pdfSmartCopy.AddNamedDestinations(SimpleNamedDestination.GetNamedDestination(reader, false), pageOffset);
+            reader.MakeRemoteNamedDestinationsLocal();
+            AddBookmarks(sourceDocumentInfo, bookmarks, startPageAt, outlines, ref previousBookmark);
+            pageOffset += numberOfPages;
+            pdfSmartCopy.FreeReader(reader);
+          }
+        }
+        pdfSmartCopy.Outlines = outlines;
+      }
+      
+      if (totalPageCount == 0)
+        throw new InvalidOperationException("Merge result is empty.");
+      
+      return totalPageCount;
+    }
+        
     protected virtual Result MergeModifiedContents(SourceDocument[] sourceFiles, Func<byte[], byte[]> modifyContents)
     {
       CheckNotNullOrEmpty(sourceFiles, "sourceFiles");
@@ -922,6 +1002,56 @@ namespace Rubicon.PdfService
           stamper.Outlines = outlines;
           stamper.Close();
         }
+      }
+    }
+    
+    private void AddBookmarks(
+      [NotNull] Contract.SourceDocumentInfo sourceDocumentInfo,
+      [CanBeNull] IList<Dictionary<string, object>> sourceDocumentBookmarks,
+      int startPage,
+      [NotNull] List<Dictionary<string, object>> allBookmarks, 
+      [CanBeNull] ref Dictionary<string, object> previousBookmark)
+    {
+      Dictionary<string, object> currentBookmark;
+      List<Dictionary<string, object>> subBookmarkCollection;
+      switch (sourceDocumentInfo.HierarchyMode)
+      {
+        case SourceDocument.OutlineHierarchyMode.WholeHierarchy:
+          currentBookmark = CreateSimpleBookmark(sourceDocumentInfo.Title, startPage, sourceDocumentInfo.BookmarkStyles);
+          subBookmarkCollection = AddKidsCollection(currentBookmark);
+          break;
+        case SourceDocument.OutlineHierarchyMode.DescendantsOnly:
+          currentBookmark = null;
+          subBookmarkCollection = allBookmarks;
+          break;
+        case SourceDocument.OutlineHierarchyMode.ThisOnly:
+          currentBookmark = CreateSimpleBookmark(sourceDocumentInfo.Title, startPage, sourceDocumentInfo.BookmarkStyles);
+          subBookmarkCollection = null;
+          break;
+        case SourceDocument.OutlineHierarchyMode.None:
+          currentBookmark = null;
+          subBookmarkCollection = null;
+          break;
+        default:
+          throw new InvalidOperationException($"Cannot handle outline hierarchy mode '{sourceDocumentInfo.HierarchyMode}'.");
+      }
+
+      if (subBookmarkCollection is not null && sourceDocumentBookmarks is not null)
+        subBookmarkCollection.AddRange(sourceDocumentBookmarks);
+
+      var isCurrentBookmarkMerged = MergeBookmarksIfSameTitle(previousBookmark, currentBookmark);
+      if (isCurrentBookmarkMerged)
+      {
+        // ReSharper disable once PossibleNullReferenceException
+        if (currentBookmark.TryGetValue(c_kidsBookmarks, out var value))
+          // ReSharper disable once PossibleNullReferenceException
+          previousBookmark[c_kidsBookmarks] = value;
+        currentBookmark = null;
+      }
+      if (currentBookmark is not null)
+      {
+        allBookmarks.Add(currentBookmark);
+        previousBookmark = currentBookmark;
       }
     }
 
